@@ -1,0 +1,417 @@
+#include <QTRSensors.h>
+
+/*
+ * Connect the SD card to the following pins:
+ *
+ * SD Card | ESP32
+ *    D2       -
+ *    D3       SS
+ *    CMD      MOSI
+ *    VSS      GND
+ *    VDD      3.3V
+ *    CLK      SCK
+ *    VSS      GND
+ *    D0       MISO
+ *    D1       -
+ */
+
+int ENA = 8;
+int MOTOR_A1 = 9;
+int MOTOR_A2 = 10;
+int ENB = 11;
+int MOTOR_B1 = 12;
+int MOTOR_B2 = 13;
+
+const int trigPin = 6;//ultrasonic sensor
+const int echoPin = 7;//ultrasonic sensor
+
+float duration, distance;//variable for ultrasonic sensor
+float stopDist = 12.0;
+
+#define outPin 4
+#define s0 15
+#define s1 14
+#define s2 3
+#define s3 2
+
+#include "FS.h"// for sd card
+#include "SD.h"// for sd card
+#include "SPI.h"// for sd card
+
+//endcoder for moter 1
+int encoder_pin1 = 2;             //Pin 2, where the encoder is connected      
+unsigned int rpm1 = 0;           // Calculated revolutions per minute.
+float velocity1 = 0;                  //speed at [Km/h]
+int pulses1 = 0;       // Number of pulses read by the Arduino in one second
+unsigned long Time1 = 0;  // Time
+unsigned int pulsesperturn1 = 20; // Number of notches on the encoder disk.
+const int wheel_diameter1 = 64;   // Small wheel diameter[mm]
+static volatile unsigned long debounce1 = 0; // Rebound time.
+char b[10];
+String strb;
+
+
+//endcoder for moter 2
+int encoder_pin2 = 3;             //Pin 2, where the encoder is connected      
+unsigned int rpm2 = 0;           // Calculated revolutions per minute.
+float velocity2 = 0;                  //speed at [Km/h]
+int pulses2 = 0;       // Number of pulses read by the Arduino in one second
+unsigned long Time2 = 0;  // Time
+unsigned int pulsesperturn2 = 20; // Number of notches on the encoder disk.
+const int wheel_diameter2 = 64;   // Small wheel diameter[mm]
+static volatile unsigned long debounce2 = 0; // Rebound time.
+char c[10];
+String strc;
+
+void readFile(fs::FS &fs, const char * path){
+    Serial.printf("Reading file: %s\n", path);
+
+    File file = fs.open(path);
+    if(!file){
+        Serial.println("Failed to open file for reading");
+        return;
+    }
+
+    Serial.print("Read from file: ");
+    while(file.available()){
+        Serial.write(file.read());
+    }
+    file.close();
+}
+
+void writeFile(fs::FS &fs, const char * path, const char * message){
+    Serial.printf("Writing file: %s\n", path);
+
+    File file = fs.open(path, FILE_WRITE);
+    if(!file){
+        Serial.println("Failed to open file for writing");
+        return;
+    }
+    if(file.print(message)){
+        Serial.println("File written");
+    } else {
+        Serial.println("Write failed");
+    }
+    file.close();
+}
+
+//funtion for motor 1
+void counter1(){
+  if(  digitalRead (encoder_pin1) && (micros()-debounce1 > 500) && digitalRead (encoder_pin1) ) { // Check again that the encoder sends a good signal and then check that the time is greater than 1000 microseconds and check again that the signal is correct.        debounce = micros(); // Almacena el tiempo para comprobar que no contamos el rebote que hay en la señal.
+        pulses1++;}  // Add up the good pulse that comes in.
+        else ; }
+
+
+//funtion for motor 2
+void counter2(){
+  if(  digitalRead (encoder_pin2) && (micros()-debounce2 > 500) && digitalRead (encoder_pin2) ) { // Check again that the encoder sends a good signal and then check that the time is greater than 1000 microseconds and check again that the signal is correct.        debounce = micros(); // Almacena el tiempo para comprobar que no contamos el rebote que hay en la señal.
+        pulses2++;}  // Add up the good pulse that comes in.
+        else ; }
+
+
+int lastError = 0;
+
+float Kp = 0.017143;
+float Ki = 0;
+float Kd = 0;
+
+int baseSpeedValue = 60;
+
+QTRSensors qtr;
+
+const uint8_t SensorCount = 6;
+uint16_t sensorValues[SensorCount];
+
+// Variables
+int red, grn, blu;
+String color ="";
+long startTiming = 0;
+long elapsedTime =0;
+
+void setup() {
+  Serial.begin(9600);
+
+  pinMode(ENA, OUTPUT); // initialize ENA pin as an output
+  pinMode(ENB, OUTPUT); // initialize ENB pin as an output
+  pinMode(MOTOR_A1, OUTPUT); // initialize MOTOR_A1 pin as an output
+  pinMode(MOTOR_A2, OUTPUT); // initialize MOTOR_A2 pin as an output
+  pinMode(MOTOR_B1, OUTPUT); // initialize MOTOR_B1 pin as an output
+  pinMode(MOTOR_B2, OUTPUT); // initialize MOTOR_B2 pin as an output
+
+  pinMode(trigPin, OUTPUT);
+  pinMode(echoPin, INPUT);
+
+  pinMode(s0, OUTPUT);
+  pinMode(s1, OUTPUT);
+  pinMode(s2, OUTPUT);
+  pinMode(s3, OUTPUT);
+  pinMode(outPin, INPUT); //out from sensor becomes input to arduino
+  // Setting frequency scaling to 100%
+  digitalWrite(s0,HIGH);
+  digitalWrite(s1,HIGH);
+ 
+  startTiming = millis();
+ 
+  qtr.setTypeAnalog();
+  qtr.setSensorPins((const uint8_t[]){A7,A5,A4,A3,A1,A0}, SensorCount);
+
+  for (uint16_t i = 0; i < 200; i++)  //10 seconds
+  {
+    qtr.calibrate();
+  }
+   if(!SD.begin()){
+        Serial.println("Card Mount Failed");
+        return;
+    }
+    uint8_t cardType = SD.cardType();
+
+    if(cardType == CARD_NONE){
+        Serial.println("No SD card attached");
+        return;
+    }
+
+    Serial.print("SD Card Type: ");
+    if(cardType == CARD_MMC){
+        Serial.println("MMC");
+    } else if(cardType == CARD_SD){
+        Serial.println("SDSC");
+    } else if(cardType == CARD_SDHC){
+        Serial.println("SDHC");
+    } else {
+        Serial.println("UNKNOWN");
+    }
+
+    uint64_t cardSize = SD.cardSize() / (1024 * 1024);
+    Serial.printf("SD Card Size: %lluMB\n", cardSize);
+
+
+    writeFile(SD, "/hello.txt", "Hello ");
+    readFile(SD, "/hello.txt");
+   
+    Serial.printf("Total space: %lluMB\n", SD.totalBytes() / (1024 * 1024));
+    Serial.printf("Used space: %lluMB\n", SD.usedBytes() / (1024 * 1024));
+   
+    pinMode(encoder_pin1, INPUT); //Pin #2 configuration
+    attachInterrupt(0, counter1, RISING); // Interrupt configuration 0, where it is connected.
+    pulses1 = 0;
+    rpm1 = 0;
+    Time1 = 0;
+    Serial.print("Seconds ");
+    Serial.print("RPM ");
+    Serial.print("Pulses ");
+    Serial.println("Velocity[Km/h]");
+   
+    pinMode(encoder_pin2, INPUT); //Pin #3 configuration
+    attachInterrupt(0, counter2, RISING); // Interrupt configuration 0, where it is connected.
+    pulses2 = 0;
+    rpm2 = 0;
+    Time2 = 0;
+    Serial.print("Seconds ");
+    Serial.print("RPM ");
+    Serial.print("Pulses ");
+    Serial.println("Velocity[Km/h]");
+
+}
+
+void loop() {
+  // put your main code here, to run repeatedly:
+     // sprint();
+    PID_Control();
+    getColor();
+    printData();
+    
+    digitalWrite(trigPin, LOW);
+    delayMicroseconds(2);
+    digitalWrite(trigPin, HIGH);
+    delayMicroseconds(10);
+    digitalWrite(trigPin, LOW);
+
+    duration = pulseIn(echoPin, HIGH);
+    distance = (duration*.0343)/2;
+    Serial.print("Distance: ");
+    Serial.println(distance);
+    if(distance <= stopDist)                        //If there are objects within the stopping distance, stopp
+    {
+       digitalWrite(MOTOR_A1, LOW);
+       digitalWrite(MOTOR_A2, LOW);
+       digitalWrite(MOTOR_B1, LOW);
+       digitalWrite(MOTOR_B2, LOW);
+       if(color == "BLACK")
+       {
+          digitalWrite(MOTOR_A1, LOW);
+          digitalWrite(MOTOR_A2, LOW);
+          digitalWrite(MOTOR_B1, LOW);
+          digitalWrite(MOTOR_B2, LOW);
+       }
+       else
+       {
+        rotate();          
+       }
+       PID_Control();
+       
+  }
+  writeFile(SD, "/hello.txt", "count of motor 1 ");
+   strb=String(pulses1);
+   strb.toCharArray(b,10);
+   writeFile(SD, "/hello.txt", b);
+   writeFile(SD, "/hello.txt", "   count of motor 2 ");
+   strc=String(pulses2);
+   strc.toCharArray(c,10);
+   writeFile(SD, "/hello.txt", c);
+   writeFile(SD, "/hello.txt", "/n");
+
+   
+  if (millis() - Time1 >= 1000){  // Updates every second
+      noInterrupts(); //Don't process interrupts during calculations // We disconnect the interruption so that it does not act in this part of the program.
+      rpm1 = (60 * 1000 / pulsesperturn1 )/ (millis() - Time1)* pulses1; //We calculate revolutions per minute
+      velocity1 = rpm1 * 3.1416 * wheel_diameter1 * 60 / 1000000; // Calculation of speed in [Km/h]
+      Time1 = millis(); // We store the current time.
+      Serial.print(millis()/1000); Serial.print("       ");// The value of time, rpm and pulses is sent to the serial port.
+      Serial.print(rpm1,DEC); Serial.print("   ");
+      Serial.print(pulses1,DEC); Serial.print("     ");
+      Serial.println(velocity1,2);
+      pulses1 = 0;  // We initialize the pulses.
+      interrupts(); // Restart the interrupt processing // We restart the interrupt
+   }
+
+
+  if (millis() - Time2 >= 1000){  // Updates every second
+      noInterrupts(); //Don't process interrupts during calculations // We disconnect the interruption so that it does not act in this part of the program.
+      rpm2 = (60 * 1000 / pulsesperturn2 )/ (millis() - Time2)* pulses2; //We calculate revolutions per minute
+      velocity2 = rpm2 * 3.1416 * wheel_diameter2 * 60 / 1000000; // Calculation of speed in [Km/h]
+      Time2 = millis(); // We store the current time.
+      Serial.print(millis()/1000); Serial.print("       ");// The value of time, rpm and pulses is sent to the serial port.
+      Serial.print(rpm2,DEC); Serial.print("   ");
+      Serial.print(pulses2,DEC); Serial.print("     ");
+      Serial.println(velocity2,2);
+      pulses2 = 0;  // We initialize the pulses.
+      interrupts(); // Restart the interrupt processing // We restart the interrupt
+   }
+    delay(100);  
+}
+//void sprint()
+//{
+  //uint16_t positionLine = qtr.readLineBlack(sensorValues);
+  //int err = positionLine;
+  //Serial.println(err);
+//}
+void PID_Control()
+{
+  uint16_t positionLine = qtr.readLineBlack(sensorValues);
+
+  int error = 3500 - positionLine;
+  
+  int P = error;
+  int I = error + I;
+  int D = lastError - error;  
+  lastError = error;
+
+  int motorSpeedNew = P * Kp + I * Ki + D * Kd;
+  
+   int motorSpeedA = baseSpeedValue + motorSpeedNew;
+   int motorSpeedB = baseSpeedValue - motorSpeedNew;
+
+   if(motorSpeedA > 75 )
+   motorSpeedA = 75;
+
+   if(motorSpeedB > 75 )
+   motorSpeedB = 75;
+
+   if(motorSpeedA < -45 )
+   motorSpeedA = -45;
+
+   if(motorSpeedB < -45 )
+   motorSpeedB = -45;
+
+   movement(motorSpeedA, motorSpeedB);
+}
+
+
+void movement(int speedA, int speedB)
+{
+if(speedA < 0)
+{
+  speedA = 0 - speedA;
+  analogWrite(ENA, speedA);
+  digitalWrite(MOTOR_A1, HIGH);
+  digitalWrite(MOTOR_A2, LOW);
+}
+
+else
+{
+  analogWrite(ENA, speedA);
+  digitalWrite(MOTOR_A1, LOW);
+  digitalWrite(MOTOR_A2, HIGH);
+}
+
+if(speedB < 0)
+{
+  speedB = 0 - speedB;
+  analogWrite(ENB, speedB); 
+  digitalWrite(MOTOR_B1, LOW);
+  digitalWrite(MOTOR_B2, HIGH);
+}
+
+else
+{
+  analogWrite(ENB, speedB); 
+  digitalWrite(MOTOR_B1, HIGH);
+  digitalWrite(MOTOR_B2, LOW);
+}
+
+}
+
+
+/* read RGB components */
+void readRGB(){
+  red = 0, grn=0, blu=0;
+ 
+  int n = 10;
+  for (int i = 0; i < n; ++i){
+    //read red component
+    digitalWrite(s2, LOW);
+    digitalWrite(s3, LOW);
+    red = red + pulseIn(outPin, LOW);
+ 
+   //read green component
+    digitalWrite(s2, HIGH);
+    digitalWrite(s3, HIGH);
+    grn = grn + pulseIn(outPin, LOW);
+   
+   //let's read blue component
+    digitalWrite(s2, LOW);
+    digitalWrite(s3, HIGH);
+    blu = blu + pulseIn(outPin, LOW);
+  }
+  red = red/n;
+  grn = grn/n;
+  blu = blu/n;
+}
+
+void printData(void){
+  Serial.print("red= ");
+  Serial.print(red);
+  Serial.print("   green= ");
+  Serial.print(grn);
+  Serial.print("   blue= ");
+  Serial.print(blu);
+  Serial.print (" - ");
+  Serial.print (color);
+  Serial.println (" detected!");
+}
+
+void getColor(){  
+  readRGB();
+     if(red>7  && red<11  && grn>17 && grn<23 && blu>13 && blu<18) color = "RED";
+     else if(red>5  && red<8   && grn>4  && grn<8  && blu>3  && blu<7)  color = "WHITE";
+     else if(red>190 && red<220  && grn>190 && grn<250 && blu>200 && blu<260) color = "BLACK";
+     else  color = "NO_COLOR";
+}
+void rotate(){
+          digitalWrite(MOTOR_A1, HIGH);
+          digitalWrite(MOTOR_A2, LOW);
+          digitalWrite(MOTOR_B1, LOW);
+          digitalWrite(MOTOR_B2, HIGH);
+          delay(1300);
+         return;
+}
